@@ -1,0 +1,439 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>Proxmox Visualizer — live resource map</title>
+<style>
+  :root{
+    --bg:#0b0e14; --bg2:#121722; --panel:#161c2a; --panel2:#1c2333;
+    --border:#2a3348; --text:#e6eaf2; --muted:#8b93a7; --dim:#5a6278;
+    --cpu:#5b8def; --ram:#a78bfa; --gpu:#34d399; --disk:#fbbf24; --net:#22d3ee; --host:#f472b6;
+    --good:#34d399; --warn:#fbbf24; --bad:#f87171;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;height:100%;background:var(--bg);color:var(--text);font-family:ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,sans-serif;overflow:hidden}
+  #app{display:grid;grid-template-rows:52px 1fr;grid-template-columns:260px 1fr 320px;height:100vh}
+  header{grid-column:1/-1;display:flex;align-items:center;gap:14px;padding:0 18px;border-bottom:1px solid var(--border);background:linear-gradient(180deg,#141a28,#0b0e14)}
+  header h1{margin:0;font-size:15px;font-weight:600;letter-spacing:.3px}
+  header .dot{width:9px;height:9px;border-radius:50%;background:var(--good);box-shadow:0 0 10px var(--good);animation:pulse 1.6s infinite}
+  header .status{color:var(--muted);font-size:12px}
+  header .right{margin-left:auto;display:flex;gap:10px;align-items:center}
+  header button{background:var(--panel2);color:var(--text);border:1px solid var(--border);padding:6px 12px;border-radius:6px;cursor:pointer;font-size:12px}
+  header button:hover{background:#232b3f}
+  .panel{background:var(--bg2);border-right:1px solid var(--border);overflow:auto;padding:14px}
+  .panel.right{border-right:none;border-left:1px solid var(--border)}
+  .panel h2{font-size:11px;text-transform:uppercase;letter-spacing:1.2px;color:var(--muted);margin:14px 0 8px}
+  .panel h2:first-child{margin-top:0}
+  .card{background:var(--panel);border:1px solid var(--border);border-radius:10px;padding:12px;margin-bottom:10px}
+  .row{display:flex;justify-content:space-between;font-size:12px;margin:4px 0;color:var(--muted)}
+  .row b{color:var(--text);font-weight:500}
+  .bar{height:6px;border-radius:3px;background:#0a0d13;overflow:hidden;margin:4px 0 10px}
+  .bar>div{height:100%;border-radius:3px;transition:width .6s ease}
+  .legend{display:flex;align-items:center;gap:8px;font-size:12px;margin:6px 0;color:var(--muted)}
+  .legend .sw{width:12px;height:12px;border-radius:3px}
+  .chip{display:inline-block;padding:2px 8px;border-radius:999px;font-size:10px;background:var(--panel2);border:1px solid var(--border);color:var(--muted);margin:2px}
+  .hostbox{background:linear-gradient(135deg,#1a1f2e,#121722);border:1px solid var(--host);border-radius:12px;padding:12px;margin-bottom:10px}
+  .hostbox .name{font-weight:600;color:var(--host);font-size:14px}
+  #canvasWrap{position:relative;overflow:hidden;background:radial-gradient(circle at 50% 50%,#101520 0%,#0b0e14 70%)}
+  #canvas{width:100%;height:100%;display:block}
+  #details .big{font-size:22px;font-weight:600;margin:4px 0}
+  #details .sub{color:var(--muted);font-size:12px}
+  .kv{display:grid;grid-template-columns:1fr auto;gap:4px 12px;font-size:12px;margin:8px 0}
+  .kv div:nth-child(odd){color:var(--muted)}
+  .kv div:nth-child(even){text-align:right;font-variant-numeric:tabular-nums}
+  .node-card{background:var(--panel);border:1px solid var(--border);border-radius:8px;padding:8px 10px;margin-bottom:6px;cursor:pointer;transition:.15s}
+  .node-card:hover{border-color:#3a4560}
+  .node-card.sel{border-color:var(--cpu)}
+  .node-card .nm{font-size:12px;font-weight:500}
+  .node-card .mt{font-size:10px;color:var(--muted)}
+  @keyframes pulse{0%,100%{opacity:1}50%{opacity:.4}}
+  .flowdot{animation:flow 2.4s linear infinite}
+  @keyframes flow{to{stroke-dashoffset:-40}}
+  .particle{animation:travel 3s linear infinite}
+  @keyframes travel{0%{offset-distance:0%}100%{offset-distance:100%}}
+  .toast{position:fixed;bottom:14px;left:50%;transform:translateX(-50%);background:#1c2333;border:1px solid var(--border);padding:8px 14px;border-radius:8px;font-size:12px;color:var(--muted);opacity:0;transition:.3s;pointer-events:none}
+  .toast.show{opacity:1}
+</style>
+</head>
+<body>
+<div id="app">
+  <header>
+    <div class="dot"></div>
+    <h1>Proxmox Visualizer</h1>
+    <span class="status" id="hostLine">connecting…</span>
+    <div class="right">
+      <span class="status" id="lastUpd">—</span>
+      <button id="refreshBtn">Refresh</button>
+      <button id="autoBtn">Auto: ON</button>
+    </div>
+  </header>
+  <aside class="panel">
+    <h2>Host</h2>
+    <div class="hostbox" id="hostBox"></div>
+    <h2>Resources</h2>
+    <div class="card" id="resCard"></div>
+    <h2>Legend</h2>
+    <div class="legend"><span class="sw" style="background:var(--cpu)"></span>CPU</div>
+    <div class="legend"><span class="sw" style="background:var(--ram)"></span>RAM</div>
+    <div class="legend"><span class="sw" style="background:var(--gpu)"></span>GPU VRAM</div>
+    <div class="legend"><span class="sw" style="background:var(--disk)"></span>Disk</div>
+    <div class="legend"><span class="sw" style="background:var(--net)"></span>Network</div>
+    <div class="legend"><span class="sw" style="background:var(--host)"></span>Host node</div>
+    <h2>Filters</h2>
+    <div>
+      <label class="chip"><input type="checkbox" checked data-f="lxc"/> LXC</label>
+      <label class="chip"><input type="checkbox" checked data-f="qemu"/> VM</label>
+      <label class="chip"><input type="checkbox" checked data-f="gpu"/> GPU</label>
+      <label class="chip"><input type="checkbox" checked data-f="storage"/> Storage</label>
+    </div>
+  </aside>
+  <main id="canvasWrap">
+    <svg id="canvas" viewBox="0 0 1200 720" preserveAspectRatio="xMidYMid meet"></svg>
+  </main>
+  <aside class="panel right">
+    <h2>Selected</h2>
+    <div id="details" class="card"><div class="sub">Click a node on the canvas.</div></div>
+    <h2>Guests</h2>
+    <div id="guestList"></div>
+  </aside>
+</div>
+<div class="toast" id="toast"></div>
+
+<script>
+const $ = (s)=>document.querySelector(s);
+const svg = $('#canvas');
+let DATA = null;
+let selected = null;
+let auto = true;
+let filters = {lxc:true,qemu:true,gpu:true,storage:true};
+
+function fmtBytes(b){
+  if(b==null) return '—';
+  const u=['B','KiB','MiB','GiB','TiB']; let i=0; let v=b;
+  while(v>=1024 && i<u.length-1){v/=1024;i++}
+  return v.toFixed(1)+' '+u[i];
+}
+function fmtUptime(s){
+  if(!s) return '—';
+  const d=Math.floor(s/86400); s%=86400; const h=Math.floor(s/3600); s%=3600; const m=Math.floor(s/60);
+  return (d?d+'d ':'')+h+'h'+m+'m';
+}
+function toast(m){const t=$('#toast');t.textContent=m;t.classList.add('show');setTimeout(()=>t.classList.remove('show'),2000)}
+
+async function load(){
+  try{
+    const r = await fetch('/api/topology');
+    DATA = await r.json();
+    render();
+    $('#lastUpd').textContent = new Date().toLocaleTimeString();
+  }catch(e){ toast('fetch failed: '+e.message) }
+}
+
+function render(){
+  if(!DATA) return;
+  renderHostBox();
+  renderResCard();
+  renderGuestList();
+  renderCanvas();
+  $('#hostLine').textContent = DATA.host.node+' · '+DATA.host.cpu_model.split(' ').slice(0,3).join(' ')+' · up '+fmtUptime(DATA.host.uptime);
+}
+
+function renderHostBox(){
+  const h=DATA.host;
+  const cpuPct=h.cpu_pct; const memPct=h.mem_total?h.mem_used/h.mem_total*100:0;
+  $('#hostBox').innerHTML = `
+    <div class="name">${h.node}</div>
+    <div class="sub">${h.pveversion||''} · ${h.kernel}</div>
+    <div style="margin-top:8px">
+      <div class="row"><span>CPU</span><b>${cpuPct.toFixed(1)}% · ${h.cpu_cores}c/${h.cpu_threads}t</b></div>
+      <div class="bar"><div style="width:${cpuPct}%;background:var(--cpu)"></div></div>
+      <div class="row"><span>RAM</span><b>${fmtBytes(h.mem_used)} / ${fmtBytes(h.mem_total)}</b></div>
+      <div class="bar"><div style="width:${memPct}%;background:var(--ram)"></div></div>
+      <div class="row"><span>Load</span><b>${(h.loadavg||[]).join(' ')}</b></div>
+    </div>`;
+}
+
+function renderResCard(){
+  const h=DATA.host;
+  const g=DATA.gpu.gpus[0];
+  const lxcs=DATA.lxcs; const vms=DATA.qemu;
+  const totCpu = lxcs.reduce((a,c)=>a+(c.cpus||0),0)+vms.reduce((a,c)=>a+(c.cpus||0),0);
+  const totMem = lxcs.reduce((a,c)=>a+(c.maxmem||0),0)+vms.reduce((a,c)=>a+(c.maxmem||0),0);
+  const usedMem = lxcs.reduce((a,c)=>a+(c.mem||0),0)+vms.reduce((a,c)=>a+(c.mem||0),0);
+  $('#resCard').innerHTML = `
+    <div class="row"><span>Guests</span><b>${lxcs.length} LXC · ${vms.length} VM</b></div>
+    <div class="row"><span>Allocated CPU</span><b>${totCpu} / ${h.cpu_threads} cores</b></div>
+    <div class="bar"><div style="width:${Math.min(100,totCpu/h.cpu_threads*100)}%;background:var(--cpu)"></div></div>
+    <div class="row"><span>Allocated RAM</span><b>${fmtBytes(totMem)} / ${fmtBytes(h.mem_total)}</b></div>
+    <div class="bar"><div style="width:${Math.min(100,totMem/h.mem_total*100)}%;background:var(--ram)"></div></div>
+    <div class="row"><span>Live RAM used</span><b>${fmtBytes(usedMem)}</b></div>
+    <div class="row"><span>GPU</span><b>${g?g.util_pct+'% · '+fmtBytes(g.mem_used_mb*1048576)+'/'+fmtBytes(g.mem_total_mb*1048576):'none'}</b></div>
+    <div class="bar"><div style="width:${g?g.util_pct:0}%;background:var(--gpu)"></div></div>
+    <div class="row"><span>Storage pools</span><b>${DATA.storage.length}</b></div>`;
+}
+
+function renderGuestList(){
+  const all=[...DATA.lxcs.map(x=>({...x,_t:'lxc'})),...DATA.qemu.map(x=>({...x,_t:'qemu'}))];
+  $('#guestList').innerHTML = all.map(g=>{
+    const pct = g.maxmem?g.mem/g.maxmem*100:0;
+    return `<div class="node-card ${selected===g.vmid?'sel':''}" data-id="${g.vmid}">
+      <div class="nm">${g.name} <span class="chip">${g._t.toUpperCase()} ${g.vmid}</span></div>
+      <div class="mt">CPU ${(g.cpu_pct||0).toFixed(1)}% · ${g.cpus}c · RAM ${fmtBytes(g.mem)}/${fmtBytes(g.maxmem)} · ${g.status}</div>
+    </div>`;
+  }).join('');
+  document.querySelectorAll('#guestList .node-card').forEach(el=>{
+    el.onclick=()=>{ selected=+el.dataset.id; renderCanvas(); renderGuestList(); showDetails(selected) };
+  });
+}
+
+// ---------- Canvas (SVG) ----------
+const NS='http://www.w3.org/2000/svg';
+function el(tag,attrs={},children=[]){
+  const e=document.createElementNS(NS,tag);
+  for(const k in attrs) e.setAttribute(k,attrs[k]);
+  for(const c of children) e.appendChild(c);
+  return e;
+}
+function clearSvg(){ while(svg.firstChild) svg.removeChild(svg.firstChild); }
+
+function renderCanvas(){
+  clearSvg();
+  if(!DATA) return;
+  const W=1200,H=720;
+  // defs: gradients, glow
+  const defs=el('defs');
+  defs.appendChild(el('filter',{id:'glow'},[el('feGaussianBlur',{stdDeviation:3,result:'b'}),el('feMerge',[el('feMergeNode',{in:'b'}),el('feMergeNode',{in:'SourceGraphic'})])]));
+  svg.appendChild(defs);
+
+  const host={x:600,y:360,w:150,h:70,label:DATA.host.node};
+  // GPU node left, storage right
+  const gpu={x:120,y:120,w:150,h:60,label:'GPU · RTX 3090'};
+  const stor={x:1030,y:120,w:150,h:60,label:'Storage'};
+
+  // arrange guests in a ring around host
+  const guests=[...DATA.lxcs.map(x=>({...x,_t:'lxc'})),...DATA.qemu.map(x=>({...x,_t:'qemu'}))];
+  const visible=guests.filter(g=>filters[g._t==='lxc'?'lxc':'qemu']);
+  const n=visible.length;
+  const R=260;
+  const positions=visible.map((g,i)=>{
+    const a=(i/n)*Math.PI*2 - Math.PI/2;
+    return {x:600+R*Math.cos(a), y:360+R*Math.sin(a), g};
+  });
+
+  // draw storage connections (host->storage) and gpu (host->gpu) lightly
+  if(filters.storage){
+    drawEdge(host,stor,'var(--disk)',0.4);
+  }
+  if(filters.gpu){
+    drawEdge(host,gpu,'var(--gpu)',0.4);
+  }
+
+  // edges host->guest with animated flow
+  positions.forEach(p=>{
+    const g=p.g;
+    const color = g._t==='lxc'?'var(--cpu)':'var(--ram)';
+    drawEdge(host,{x:p.x,y:p.y,w:120,h:50},color,0.6, g);
+  });
+
+  // draw nodes
+  if(filters.gpu) drawNode(gpu,'gpu',DATA.gpu.gpus[0]?DATA.gpu.gpus[0].util_pct+'%':'—',DATA.gpu.gpus[0]?fmtBytes(DATA.gpu.gpus[0].mem_used_mb*1048576):'');
+  if(filters.storage) drawStorageNode(stor);
+  drawHostNode(host);
+  positions.forEach(p=>drawGuestNode(p,guests.indexOf(p.g)===-1?null:p.g));
+
+  // particles along edges (animated)
+  animateParticles();
+}
+
+function drawEdge(a,b,color,opacity,guest){
+  const ax=a.x+a.w/2, ay=a.y+a.h/2;
+  const bx=b.x+b.w/2, by=b.y+b.h/2;
+  const line=el('line',{x1:ax,y1:ay,x2:bx,y2:by,stroke:color,'stroke-width':1.5,'stroke-opacity':opacity,'stroke-dasharray':'6 6',class:'flowdot'});
+  svg.appendChild(line);
+}
+
+function drawHostNode(n){
+  const g=el('g',{transform:`translate(${n.x},${n.y})`,class:'hostnode',style:'cursor:pointer'});
+  const rect=el('rect',{x:0,y:0,width:n.w,height:n.h,rx:14,fill:'#1a1f2e',stroke:'var(--host)','stroke-width':2.5,filter:'url(#glow)'});
+  g.appendChild(rect);
+  const t=el('text',{x:n.w/2,y:26,'text-anchor':'middle',fill:'var(--host)','font-size':13,'font-weight':600});
+  t.textContent=n.label; g.appendChild(t);
+  const sub=el('text',{x:n.w/2,y:46,'text-anchor':'middle',fill:'var(--muted)','font-size':10});
+  sub.textContent='host · '+DATA.host.cpu_threads+' cores'; g.appendChild(sub);
+  const cpu=DATA.host.cpu_pct;
+  const bar=el('rect',{x:8,y:n.h-8,width:(n.w-16)*cpu/100,height:4,rx:2,fill:'var(--cpu)'});
+  g.appendChild(bar);
+  g.onclick=()=>{ selected='host'; showHostDetails() };
+  svg.appendChild(g);
+}
+
+function drawNode(n,key,main,sub){
+  const g=el('g',{transform:`translate(${n.x},${n.y})`,style:'cursor:pointer'});
+  const rect=el('rect',{x:0,y:0,width:n.w,height:n.h,rx:10,fill:'var(--panel)',stroke:'var(--border)','stroke-width':1.5});
+  g.appendChild(rect);
+  const t=el('text',{x:n.w/2,y:22,'text-anchor':'middle',fill:'var(--text)','font-size':12,'font-weight':600});
+  t.textContent=n.label; g.appendChild(t);
+  const m=el('text',{x:n.w/2,y:40,'text-anchor':'middle',fill:'var(--muted)','font-size':11});
+  m.textContent=main; g.appendChild(m);
+  if(sub){const s=el('text',{x:n.w/2,y:54,'text-anchor':'middle',fill:'var(--dim)','font-size':9});s.textContent=sub;g.appendChild(s);}
+  g.onclick=()=>{ selected=key; showGpuDetails() };
+  svg.appendChild(g);
+}
+
+function drawStorageNode(n){
+  const g=el('g',{transform:`translate(${n.x},${n.y})`,style:'cursor:pointer'});
+  const rect=el('rect',{x:0,y:0,width:n.w,height:n.h,rx:10,fill:'var(--panel)',stroke:'var(--disk)','stroke-width':1.5});
+  g.appendChild(rect);
+  const t=el('text',{x:n.w/2,y:22,'text-anchor':'middle',fill:'var(--disk)','font-size':12,'font-weight':600});
+  t.textContent='Storage'; g.appendChild(t);
+  const sub=el('text',{x:n.w/2,y:40,'text-anchor':'middle',fill:'var(--muted)','font-size':10});
+  sub.textContent=DATA.storage.length+' pools'; g.appendChild(sub);
+  g.onclick=()=>{ selected='storage'; showStorageDetails() };
+  svg.appendChild(g);
+}
+
+function drawGuestNode(g){
+  if(!g) return;
+  // find position
+  // (called per position already bound) - this function expects position object; handle below instead
+}
+
+// rewrite: draw guests from positions
+function renderGuests(positions){
+  positions.forEach(p=>{
+    const g=p.g;
+    const grp=el('g',{transform:`translate(${p.x-60},${p.y-25})`,style:'cursor:pointer'});
+    const sel = selected===g.vmid;
+    const rect=el('rect',{x:0,y:0,width:120,height:50,rx:9,fill:sel?'#1e2740':'var(--panel)',stroke:sel?'var(--cpu)':'var(--border)','stroke-width':sel?2:1.2});
+    grp.appendChild(rect);
+    const t=el('text',{x:60,y:18,'text-anchor':'middle',fill:'var(--text)','font-size':11,'font-weight':600});
+    t.textContent=g.name.length>14?g.name.slice(0,13)+'…':g.name; grp.appendChild(t);
+    const m=el('text',{x:60,y:32,'text-anchor':'middle',fill:'var(--muted)','font-size':9});
+    m.textContent=`${g._t.toUpperCase()} ${g.vmid} · ${g.cpus}c`; grp.appendChild(m);
+    // mini mem bar
+    const pct=g.maxmem?g.mem/g.maxmem:0;
+    grp.appendChild(el('rect',{x:8,y:40,width:104,height:4,rx:2,fill:'#0a0d13'}));
+    grp.appendChild(el('rect',{x:8,y:40,width:104*pct,height:4,rx:2,fill:g._t==='lxc'?'var(--cpu)':'var(--ram)'}));
+    const dot=el('circle',{cx:110,cy:10,r:4,fill:g.status==='running'?'var(--good)':'var(--bad)'});
+    grp.appendChild(dot);
+    grp.onclick=()=>{ selected=g.vmid; renderCanvas(); renderGuestList(); showDetails(g.vmid) };
+    svg.appendChild(grp);
+  });
+}
+
+// Override renderCanvas guest drawing: call renderGuests with positions
+const _origRenderCanvas = renderCanvas;
+renderCanvas = function(){
+  clearSvg();
+  if(!DATA) return;
+  const W=1200,H=720;
+  const defs=el('defs');
+  defs.appendChild(el('filter',{id:'glow'},[el('feGaussianBlur',{stdDeviation:3,result:'b'}),el('feMerge',[el('feMergeNode',{in:'b'}),el('feMergeNode',{in:'SourceGraphic'})])]));
+  svg.appendChild(defs);
+
+  const host={x:525,y:325,w:150,h:70};
+  const gpu={x:100,y:90,w:150,h:60};
+  const stor={x:950,y:90,w:150,h:60};
+
+  const guests=[...DATA.lxcs.map(x=>({...x,_t:'lxc'})),...DATA.qemu.map(x=>({...x,_t:'qemu'}))];
+  const visible=guests.filter(g=>filters[g._t==='lxc'?'lxc':'qemu']);
+  const n=visible.length;
+  const R=250;
+  const positions=visible.map((g,i)=>{
+    const a=(i/n)*Math.PI*2 - Math.PI/2;
+    return {x:600+R*Math.cos(a), y:360+R*Math.sin(a), g};
+  });
+
+  if(filters.storage) drawEdge(host,stor,'var(--disk)',0.5);
+  if(filters.gpu) drawEdge(host,gpu,'var(--gpu)',0.5);
+  positions.forEach(p=>drawEdge(host,{x:p.x-60,y:p.y-25,w:120,h:50},'var(--cpu)',0.35));
+
+  if(filters.gpu) drawNode(gpu,'gpu',DATA.gpu.gpus[0]?DATA.gpu.gpus[0].util_pct+'%':'—',DATA.gpu.gpus[0]?fmtBytes(DATA.gpu.gpus[0].mem_used_mb*1048576)+' used':'');
+  if(filters.storage) drawStorageNode(stor);
+  drawHostNode(host);
+  renderGuests(positions);
+};
+
+function animateParticles(){
+  // add moving circles along a few edges for liveliness
+}
+
+function showDetails(vmid){
+  const g=[...DATA.lxcs,...DATA.qemu].find(x=>x.vmid===vmid);
+  if(!g) return;
+  const pct=g.maxmem?g.mem/g.maxmem*100:0;
+  const cpuPct=g.cpu_pct||0;
+  $('#details').innerHTML = `
+    <div class="big">${g.name}</div>
+    <div class="sub">${g.type?g.type.toUpperCase():'LXC'} · vmid ${g.vmid} · ${g.status}</div>
+    <div class="kv">
+      <div>CPU usage</div><div>${cpuPct.toFixed(2)}%</div>
+      <div>Allocated cores</div><div>${g.cpus}</div>
+      <div>RAM used</div><div>${fmtBytes(g.mem)}</div>
+      <div>RAM allocated</div><div>${fmtBytes(g.maxmem)}</div>
+      <div>RAM util</div><div>${pct.toFixed(1)}%</div>
+      <div>Disk used</div><div>${fmtBytes(g.disk||0)}</div>
+      <div>Disk allocated</div><div>${fmtBytes(g.maxdisk||0)}</div>
+      <div>Net in</div><div>${fmtBytes(g.netin||0)}</div>
+      <div>Net out</div><div>${fmtBytes(g.netout||0)}</div>
+      <div>Uptime</div><div>${fmtUptime(g.uptime)}</div>
+      <div>Tags</div><div>${g.tags||'—'}</div>
+    </div>
+    <div class="bar"><div style="width:${Math.min(100,cpuPct)}%;background:var(--cpu)"></div></div>
+    <div class="bar"><div style="width:${pct}%;background:var(--ram)"></div></div>`;
+}
+function showHostDetails(){
+  const h=DATA.host;
+  const memPct=h.mem_total?h.mem_used/h.mem_total*100:0;
+  $('#details').innerHTML = `
+    <div class="big">${h.node}</div>
+    <div class="sub">Proxmox host · ${h.pveversion}</div>
+    <div class="kv">
+      <div>CPU usage</div><div>${h.cpu_pct.toFixed(2)}%</div>
+      <div>Cores/threads</div><div>${h.cpu_cores}/${h.cpu_threads}</div>
+      <div>CPU model</div><div style="font-size:10px">${h.cpu_model}</div>
+      <div>RAM used</div><div>${fmtBytes(h.mem_used)}</div>
+      <div>RAM total</div><div>${fmtBytes(h.mem_total)}</div>
+      <div>RAM free</div><div>${fmtBytes(h.mem_free)}</div>
+      <div>Load avg</div><div>${(h.loadavg||[]).join(' ')}</div>
+      <div>Uptime</div><div>${fmtUptime(h.uptime)}</div>
+      <div>Kernel</div><div>${h.kernel}</div>
+    </div>`;
+}
+function showGpuDetails(){
+  const g=DATA.gpu.gpus[0];
+  if(!g) return;
+  const memPct=g.mem_total_mb?g.mem_used_mb/g.mem_total_mb*100:0;
+  $('#details').innerHTML = `
+    <div class="big">${g.name}</div>
+    <div class="sub">GPU · ${g.temp_c}°C · ${g.power_w}W</div>
+    <div class="kv">
+      <div>Utilization</div><div>${g.util_pct}%</div>
+      <div>VRAM used</div><div>${fmtBytes(g.mem_used_mb*1048576)}</div>
+      <div>VRAM total</div><div>${fmtBytes(g.mem_total_mb*1048576)}</div>
+      <div>VRAM util</div><div>${memPct.toFixed(1)}%</div>
+    </div>
+    <h2 style="margin-top:10px">Compute apps</h2>
+    ${DATA.gpu.compute_apps.map(a=>`<div class="row"><span>${a.name} (${a.pid})</span><b>${fmtBytes(a.mem_mb*1048576)}</b></div>`).join('')||'<div class="sub">none</div>'}`;
+}
+function showStorageDetails(){
+  $('#details').innerHTML = `<div class="big">Storage pools</div>`+
+    DATA.storage.map(s=>{
+      const pct=s.total?s.used/s.total*100:0;
+      return `<div class="card" style="margin-top:8px"><div class="row"><span>${s.name}</span><b>${s.type} · ${s.status}</b></div><div class="row"><span>used</span><b>${fmtBytes(s.used)} / ${fmtBytes(s.total)}</b></div><div class="bar"><div style="width:${pct}%;background:var(--disk)"></div></div></div>`;
+    }).join('');
+}
+
+// filters
+document.querySelectorAll('[data-f]').forEach(cb=>{
+  cb.onchange=()=>{ filters[cb.dataset.f]=cb.checked; renderCanvas(); };
+});
+$('#refreshBtn').onclick=load;
+$('#autoBtn').onclick=()=>{ auto=!auto; $('#autoBtn').textContent='Auto: '+(auto?'ON':'OFF'); };
+
+load();
+setInterval(()=>{ if(auto) load(); }, 5000);
+</script>
+</body>
+</html>
