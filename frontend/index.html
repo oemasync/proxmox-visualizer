@@ -61,6 +61,7 @@
     <span class="status" id="hostLine">connecting…</span>
     <div class="right">
       <span class="status" id="lastUpd">—</span>
+      <button id="viewBtn">View: Topology</button>
       <button id="refreshBtn">Refresh</button>
       <button id="autoBtn">Auto: ON</button>
     </div>
@@ -266,9 +267,13 @@ function drawCable(pathD, color, v, opts={}){
   return line;
 }
 
+let viewMode = 'topo';
+
 function renderCanvas(){
   clearSvg();
   if(!DATA) return;
+  if(viewMode === 'circuit'){ renderCircuit(); return; }
+  // existing topo render follows below...
   const defs=el('defs');
   defs.appendChild(el('filter',{id:'glow',x:'-60%',y:'-60%',width:'220%',height:'220%'},
     [el('feGaussianBlur',{stdDeviation:2.2,result:'b'}),el('feMerge',[el('feMergeNode',{in:'b'}),el('feMergeNode',{in:'SourceGraphic'})])]));
@@ -527,6 +532,117 @@ document.querySelectorAll('[data-f]').forEach(cb=>{
 });
 $('#refreshBtn').onclick=load;
 $('#autoBtn').onclick=()=>{ auto=!auto; $('#autoBtn').textContent='Auto: '+(auto?'ON':'OFF'); };
+
+// ---------- Circuit / motherboard view ----------
+function renderCircuit(){
+  clearSvg();
+  if(!DATA) return;
+  const defs=el('defs');
+  defs.appendChild(el('filter',{id:'glow',x:'-60%',y:'-60%',width:'220%',height:'220%'},
+    [el('feGaussianBlur',{stdDeviation:2.2,result:'b'}),el('feMerge',[el('feMergeNode',{in:'b'}),el('feMergeNode',{in:'SourceGraphic'})])]));
+  svg.appendChild(defs);
+
+  const guests=[...DATA.lxcs.map(x=>({...x,_t:'lxc'})),...DATA.qemu.map(x=>({...x,_t:'qemu'}))].sort((a,b)=>a.vmid-b.vmid);
+  const visible=guests.filter(g=>filters[g._t==='lxc'?'lxc':'qemu']);
+  const n=visible.length;
+
+  const HOST={x:70,y:60,w:200,h:780};
+  const RAIL={x:1400,y:60,w:130,h:780};
+
+  const rowH = Math.min(46, (HOST.h-60)/Math.max(1,n));
+  const top0 = HOST.y + 46;
+  const gx = RAIL.x - 150;
+
+  // host slab
+  const hg=el('g',{style:'cursor:pointer'});
+  hg.appendChild(el('rect',{x:HOST.x,y:HOST.y,width:HOST.w,height:HOST.h,rx:12,fill:'#0a1020',stroke:'var(--host)','stroke-width':2.5,filter:'url(#glow)'}));
+  const ht=el('text',{x:HOST.x+HOST.w/2,y:HOST.y+30,'text-anchor':'middle',fill:'var(--host)','font-size':16,'font-weight':700}); ht.textContent=DATA.host.node; hg.appendChild(ht);
+  const hs=el('text',{x:HOST.x+HOST.w/2,y:HOST.y+50,'text-anchor':'middle',fill:'var(--muted)','font-size':10}); hs.textContent=DATA.host.cpu_threads+' threads · '+(DATA.host.cpu_pct||0).toFixed(1)+'% CPU'; hg.appendChild(hs);
+  ['CPU','RAM','DISK','NET','PWR'].forEach((l,i)=>{
+    const y=HOST.y+90+i*34;
+    const t=el('text',{x:HOST.x+14,y:y+4,fill:'var(--muted)','font-size':10}); t.textContent=l; hg.appendChild(t);
+    hg.appendChild(el('rect',{x:HOST.x+62,y:y,width:HOST.w-78,height:3,rx:1.5,fill:'#06090f'}));
+  });
+  hg.onclick=()=>{ selected='host'; showHostDetails() };
+  svg.appendChild(hg);
+
+  // power rail
+  const rg=el('g',{style:'cursor:pointer'});
+  rg.appendChild(el('rect',{x:RAIL.x,y:RAIL.y,width:RAIL.w,height:RAIL.h,rx:12,fill:'#0a1020',stroke:'var(--stor)','stroke-width':2}));
+  const rt=el('text',{x:RAIL.x+RAIL.w/2,y:RAIL.y+30,'text-anchor':'middle',fill:'var(--stor)','font-size':14,'font-weight':700}); rt.textContent='POWER BUS'; rg.appendChild(rt);
+  const rs=el('text',{x:RAIL.x+RAIL.w/2,y:RAIL.y+50,'text-anchor':'middle',fill:'var(--muted)','font-size':9.5}); rs.textContent=DATA.storage.length+' pools'; rg.appendChild(rs);
+  rg.onclick=()=>{ selected='storage'; showStorageDetails() };
+  svg.appendChild(rg);
+
+  // traces per guest
+  visible.forEach((g,i)=>{
+    const y = top0 + i*rowH;
+    const gy = y - 16;
+    const r = (RATES && RATES[g.vmid]) || {net:0,disk:0};
+    const cpuV = Math.max(0,Math.min(1,(g.cpu_pct||0)/100));
+    const ramV = g.maxmem?(g.mem||0)/g.maxmem:0;
+    const diskV = Math.max(g.maxdisk?(g.disk||0)/g.maxdisk:0, Math.min(1,r.disk/10e6));
+    const netV = Math.min(1,r.net/1e6);
+    const vals=[{key:'cpu',color:'var(--cpu)',v:cpuV},{key:'ram',color:'var(--ram)',v:ramV},{key:'disk',color:'var(--disk)',v:diskV},{key:'net',color:'var(--net)',v:netV}];
+    vals.forEach((c,ci)=>{
+      const ty = y + (ci-1.5)*5.5;
+      const x0 = HOST.x+HOST.w+6;
+      const x1 = gx-6;
+      const d = `M${x0},${ty} L${x1},${ty}`;
+      const p = Math.max(0,Math.min(1,c.v));
+      const line=el('line',{x1:x0,y1:ty,x2:x1,y2:ty,stroke:c.color,'stroke-width':1.1+p*1.7,'stroke-opacity':0.16+p*0.74,'stroke-dasharray':'6 5'});
+      line.style.animation=`cableflow ${Math.max(0.35,2.4-p*2).toFixed(2)}s linear infinite`;
+      if(p>=0.45) line.setAttribute('filter','url(#glow)');
+      svg.appendChild(line);
+      if(p>=0.06){
+        const cnt = p>=0.6?3:(p>=0.25?2:1);
+        for(let k=0;k<cnt;k++){
+          const dot=el('circle',{r:1.7+p*1.1,fill:c.color,opacity:0.55+p*0.4});
+          if(p>=0.45) dot.setAttribute('filter','url(#glow)');
+          const am=el('animateMotion',{dur:Math.max(0.5,2.8-p*2.2).toFixed(2)+'s',repeatCount:'indefinite',begin:(k*0.3).toFixed(2)+'s',path:d});
+          dot.appendChild(am);
+          svg.appendChild(dot);
+        }
+      }
+      svg.appendChild(el('circle',{cx:x0-2,cy:ty,r:1.8,fill:c.color,opacity:0.45+p*0.5}));
+    });
+
+    // guest chip
+    const chip=el('g',{style:'cursor:pointer'});
+    const sel = selected===g.vmid;
+    chip.appendChild(el('rect',{x:gx,y:gy,width:140,height:32,rx:6,fill:sel?'#1e2a44':'#0f1626',stroke:sel?'var(--cpu)':'var(--border)','stroke-width':sel?2:1.2}));
+    const t=el('text',{x:gx+70,y:gy+13,'text-anchor':'middle',fill:'var(--text)','font-size':11,'font-weight':600});
+    t.textContent=g.name.length>17?g.name.slice(0,16)+'…':g.name; chip.appendChild(t);
+    const m=el('text',{x:gx+70,y:gy+26,'text-anchor':'middle',fill:'var(--muted)','font-size':8.5});
+    m.textContent=`${g._t.toUpperCase()} ${g.vmid} · ${g.cpus}c · ${(g.cpu_pct||0).toFixed(1)}%`; chip.appendChild(m);
+    chip.appendChild(el('circle',{cx:gx+132,cy:gy+8,r:3.5,fill:g.status==='running'?'var(--good)':'var(--bad)'}));
+    chip.onclick=()=>{ selected=g.vmid; renderCanvas(); renderGuestList(); showDetails(g.vmid) };
+    svg.appendChild(chip);
+  });
+
+  // GPU chip on host slab bottom
+  const gg=DATA.gpu.gpus[0];
+  const gchip=el('g',{style:'cursor:pointer'});
+  gchip.appendChild(el('rect',{x:HOST.x+10,y:HOST.y+HOST.h-78,width:HOST.w-20,height:60,rx:8,fill:'#0f1626',stroke:'var(--gpu)','stroke-width':1.6}));
+  const gt=el('text',{x:HOST.x+HOST.w/2,y:HOST.y+HOST.h-58,'text-anchor':'middle',fill:'var(--gpu)','font-size':11,'font-weight':600}); gt.textContent='GPU'; gchip.appendChild(gt);
+  const gsub=el('text',{x:HOST.x+HOST.w/2,y:HOST.y+HOST.h-42,'text-anchor':'middle',fill:'var(--muted)','font-size':9});
+  gsub.textContent=gg?gg.util_pct+'% · '+fmtBytes(gg.mem_used_mb*1048576):'—'; gchip.appendChild(gsub);
+  gchip.onclick=()=>{ selected='gpu'; showGpuDetails() };
+  svg.appendChild(gchip);
+
+  // WAN chip on power rail bottom
+  const wchip=el('g',{style:'cursor:pointer'});
+  wchip.appendChild(el('rect',{x:RAIL.x+10,y:RAIL.y+RAIL.h-78,width:RAIL.w-20,height:60,rx:8,fill:'#0f1626',stroke:'var(--wan)','stroke-width':1.6}));
+  const wt=el('text',{x:RAIL.x+RAIL.w/2,y:RAIL.y+RAIL.h-58,'text-anchor':'middle',fill:'var(--wan)','font-size':11,'font-weight':600}); wt.textContent='WAN'; wchip.appendChild(wt);
+  const wr=RATES?Object.values(RATES).reduce((a,x)=>a+x.net,0):0;
+  const ws=el('text',{x:RAIL.x+RAIL.w/2,y:RAIL.y+RAIL.h-42,'text-anchor':'middle',fill:'var(--muted)','font-size':9});
+  ws.textContent=wr>0?fmtBytes(wr)+'/s':'idle'; wchip.appendChild(ws);
+  wchip.onclick=()=>{ selected='wan'; showWanDetails() };
+  svg.appendChild(wchip);
+}
+
+// ---------- View toggle ----------
+$('#viewBtn').onclick=()=>{ viewMode = viewMode==='topo'?'circuit':'topo'; $('#viewBtn').textContent='View: '+(viewMode==='topo'?'Topology':'Circuit'); renderCanvas(); };
 
 load();
 setInterval(()=>{ if(auto) load(); }, 5000);
