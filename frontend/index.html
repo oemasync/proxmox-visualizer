@@ -212,7 +212,7 @@ function renderResCard(){
     <div class="row"><span>Storage pools</span><b>${DATA.storage.length}</b></div>`;
 }
 function renderGuestList(){
-  const all=[...DATA.lxcs.map(x=>({...x,_t:'lxc'})),...DATA.qemu.map(x=>({...x,_t:'qemu'}))];
+  const all=[...DATA.lxcs.map(x=>({...x,_t:'lxc'})),...DATA.qemu.map(x=>({...x,_t:'qemu'}))].sort((a,b)=>a.vmid-b.vmid);
   $('#guestList').innerHTML = all.map(g=>{
     return `<div class="node-card ${selected===g.vmid?'sel':''}" data-id="${g.vmid}">
       <div class="nm">${g.name} <span class="chip">${g._t.toUpperCase()} ${g.vmid}</span></div>
@@ -274,7 +274,7 @@ function renderCanvas(){
     [el('feGaussianBlur',{stdDeviation:2.2,result:'b'}),el('feMerge',[el('feMergeNode',{in:'b'}),el('feMergeNode',{in:'SourceGraphic'})])]));
   svg.appendChild(defs);
 
-  const guests=[...DATA.lxcs.map(x=>({...x,_t:'lxc'})),...DATA.qemu.map(x=>({...x,_t:'qemu'}))];
+  const guests=[...DATA.lxcs.map(x=>({...x,_t:'lxc'})),...DATA.qemu.map(x=>({...x,_t:'qemu'}))].sort((a,b)=>a.vmid-b.vmid);
   const visible=guests.filter(g=>filters[g._t==='lxc'?'lxc':'qemu']);
   const n=visible.length;
   const positions=visible.map((g,i)=>{
